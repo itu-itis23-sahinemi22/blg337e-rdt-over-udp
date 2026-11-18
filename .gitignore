@@ -1,0 +1,16 @@
+# Build output
+/build/
+/bin/
+
+# Scratch runs while developing (final experiment runs under runs/ are committed)
+/runs/scratch/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# OS / sync clutter
+.DS_Store
+Thumbs.db
+desktop.ini
