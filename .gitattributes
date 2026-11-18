@@ -1,0 +1,5 @@
+# LF everywhere, also on Windows checkouts, so scripts and the Makefile work in WSL/Linux.
+* text=auto eol=lf
+
+*.pdf binary
+*.png binary
