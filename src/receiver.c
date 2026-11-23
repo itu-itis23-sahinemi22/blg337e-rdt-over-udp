@@ -1,7 +1,6 @@
 /* Receiver: validates packets, sends ACKs and rebuilds the file (#6, #11, #12). */
 #include <errno.h>
 #include <inttypes.h>
-#include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -108,24 +107,31 @@ static void send_ack(struct receiver *r, uint32_t num, const struct sockaddr_in 
 }
 
 /*
-    the receive loop, the same for every protocol. until the file is complete it waits
-    without a limit; then it lingers: every datagram, valid or not, restarts the linger
-    period, and the receiver exits once a whole period passes in silence (section 4.2).
-    returns the exit status.
+    the receive loop, the same for every protocol. it waits without a limit for the first
+    datagram, because the sender may start later. from then on every datagram, valid or not,
+    restarts the linger period, and the receiver exits once a whole period passes in silence:
+    with 0 if the file is complete, with 1 if it is not, because then the sender has given
+    up (section 4.2). returns the exit status.
  */
 static int run(struct receiver *r, data_handler on_data)
 {
     static uint8_t buf[MAX_PKT];
-    // poll() takes an int; INT_MAX ms is almost 25 days
-    int linger = r->cfg->linger_ms > INT_MAX ? INT_MAX : (int)r->cfg->linger_ms;
+    int linger = (int)r->cfg->linger_ms; // the CLI keeps it <= INT_MAX, as poll() takes an int
+    int started = 0;                     // a datagram has arrived
 
     for (;;) {
-        int ready = udp_wait(r->fd, r->complete ? linger : -1);
+        int ready = udp_wait(r->fd, started ? linger : -1);
         if (ready < 0) {
             report_error("poll");
             return 2;
         }
         if (ready == 0) {
+            if (!r->complete) {
+                fprintf(stderr, "receiver: no datagram for %d ms and the file is not complete, "
+                                "giving up\n", linger);
+                log_event("give_up", 0, 0, 0, 0, "linger_ms=%d bytes=%" PRIu64, linger, r->bytes);
+                return 1;
+            }
             log_event("exit", 0, 0, 0, 0, "linger_ms=%d", linger);
             return 0;
         }
@@ -139,6 +145,7 @@ static int run(struct receiver *r, data_handler on_data)
             report_error("recvfrom");
             return 2;
         }
+        started = 1;
 
         // header fields are not trusted here, so only the size is logged; no reply (section 2.5)
         enum pkt_status s = packet_check(buf, (size_t)n, TYPE_DATA, r->cfg->k);

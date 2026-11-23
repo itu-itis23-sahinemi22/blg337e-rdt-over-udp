@@ -41,7 +41,7 @@ static void usage(FILE *out, enum role role)
                 "  -L  log file (required)\n"
                 "  -w  window size, 1..2^k (default %d, ignored with sw)\n"
                 "  -k  sequence-number width in bits, 3..8 (default %d)\n"
-                "  -q  linger time in ms after the file is complete (default %d)\n"
+                "  -q  linger time: ms without any datagram before exiting (default %d)\n"
                 "  -h  print this help\n",
                 DEFAULT_W, DEFAULT_K, DEFAULT_LINGER_MS);
     }
@@ -153,9 +153,9 @@ enum cli_result cli_parse(int argc, char **argv, enum role role, struct config *
                 return bad_value(role, c, optarg, "a file name");
             cfg->log_path = optarg;
             break;
-        case 'r':
-            if (!parse_uint(optarg, 1, UINT_MAX, &v))
-                return bad_value(role, c, optarg, "a positive integer");
+        case 'r': // times in ms end up in poll(), which takes an int
+            if (!parse_uint(optarg, 1, INT_MAX, &v))
+                return bad_value(role, c, optarg, "1..2147483647");
             cfg->min_rto_ms = (unsigned)v;
             break;
         case 'x':
@@ -164,8 +164,8 @@ enum cli_result cli_parse(int argc, char **argv, enum role role, struct config *
             cfg->max_retx = (unsigned)v;
             break;
         case 'q':
-            if (!parse_uint(optarg, 1, UINT_MAX, &v))
-                return bad_value(role, c, optarg, "a positive integer");
+            if (!parse_uint(optarg, 1, INT_MAX, &v))
+                return bad_value(role, c, optarg, "1..2147483647");
             cfg->linger_ms = (unsigned)v;
             break;
         case 'h':
