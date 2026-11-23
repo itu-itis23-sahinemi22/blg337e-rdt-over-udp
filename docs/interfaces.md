@@ -78,8 +78,6 @@ compiler padding or on the host's byte order.
 #define FLAG_LAST   0x02
 ```
 
-All three programs, the emulator included, use these names; none of them defines its own offsets.
-
 and provides the only functions that know the byte order:
 
 ```c
@@ -88,6 +86,9 @@ void     write_u16(uint8_t *buf, size_t off, uint16_t v);
 uint32_t read_u32 (const uint8_t *buf, size_t off);
 void     write_u32(uint8_t *buf, size_t off, uint32_t v);
 ```
+
+All three programs, the emulator included, use these names and helpers; none of them defines its
+own offsets.
 
 ### 2.3 Fields
 
@@ -199,10 +200,14 @@ the start.
 
 - **Stop-and-Wait:** an ACK whose `num` equals the outstanding packet's sequence number completes
   it; any other ACK is ignored.
-- **Go-Back-N:** with `base` the oldest unacknowledged number and `next` the next number to send,
-  an ACK with `0 < d(num, base) ≤ d(next, base)` acknowledges every packet from `base` up to
-  `num − 1`, and `base ← num`. Any other ACK (including a repeat of the current `base`) acknowledges
-  nothing new and is ignored.
+- **Go-Back-N:** the sender counts packets with indices that never wrap: `base` is the oldest
+  unacknowledged packet, `next` the next packet to send, so `next − base` packets are outstanding.
+  Only the number written into a packet is taken modulo 2^k. An ACK with
+  `1 ≤ d(num, base mod 2^k) ≤ next − base` acknowledges that many packets, from `base` up to the
+  one before `num`, and `base` moves past them. Any other ACK (including a repeat of the current
+  `base`) acknowledges nothing new and is ignored.
+  Counting in packets matters at `W = 2^k`: with a full window `next mod 2^k = base mod 2^k`,
+  so a bound of `d(next, base)` would be 0 and every ACK would be ignored.
 - **Selective Repeat:** an ACK whose `num` is an outstanding, not yet acknowledged packet marks that
   packet acknowledged; the window then slides past every acknowledged packet at its start.
   Any other ACK is ignored.
@@ -228,17 +233,24 @@ A transfer ends with the `LAST` flag. There are no separate connection set-up or
 
 ### 4.2 Receiver
 
-- Before the first DATA packet arrives, the receiver waits indefinitely.
+- Before the first datagram arrives, the receiver waits indefinitely, since the sender may be
+  started later (5.4).
 - The file is complete when the `LAST` packet is **delivered in order**, that is, once every packet
   before it has been delivered too. With Selective Repeat the `LAST` packet may arrive early; it then
   waits in the buffer like any other packet. On completion the receiver closes the output file and
   logs it.
 - **Lingering:** the receiver does not exit immediately. It keeps answering DATA packets by the rules
   of section 3, so that if its final ACK was lost, the sender's retransmission is acknowledged again.
-  It exits with status 0 once `-q` milliseconds pass without any datagram arriving; every arriving
-  datagram restarts this period.
-- `-q` must be longer than the sender's largest retransmission interval (its RTO after backoff)
-  plus one RTT. Otherwise a retransmitted `LAST` packet can arrive after the receiver has left.
+- **Linger time `-q`:** from the first datagram on, the receiver exits once `-q` milliseconds pass
+  without any datagram arriving; every arriving datagram, valid or not, restarts this period.
+  - If the file is complete, it exits with status 0. This is the normal end of a transfer.
+  - If it is not, the sender has given up (4.1). The receiver logs the failure and exits with
+    status 1; the incomplete output file is left as it is. Without this rule it would wait forever.
+- `-q` must be longer than the longest silence a sender that has not given up can cause: the
+  intervals between one packet's transmissions up to its `-x`-th retransmission added up (each one
+  the RTO after backoff), plus one RTT as a margin. Otherwise the receiver can leave while the
+  sender is still retransmitting: a retransmitted `LAST` packet then finds no receiver, or a
+  transfer that was still running ends with status 1.
 
 ### 4.3 Edge cases
 
@@ -249,6 +261,8 @@ A transfer ends with the `LAST` flag. There are no separate connection set-up or
 | `LAST` arrives before earlier packets (SR)   | Buffered; the file is complete only when it is delivered in order.   |
 | A bit flip hits `LAST` (or any header bit)   | The CRC check fails and the packet is dropped like a lost one.       |
 | The final ACK is lost                        | The sender retransmits; the lingering receiver acknowledges again.   |
+| The sender gives up before the file is complete | After `-q` ms of silence the receiver exits with status 1.        |
+| No datagram ever reaches the receiver        | It waits indefinitely (4.2); the run scripts stop it.                |
 | The receiver has already exited              | No ACK ever comes; the sender gives up after `-x` retransmissions.   |
 
 ### 4.4 Design note
@@ -277,13 +291,18 @@ only the required options is a baseline run.
 | `-f`   | File to send                             | File to write               | required      |
 | `-P`   | Emulator port `E` to send to             | Port `R` to listen on       | required      |
 | `-L`   | Log file                                 | Log file                    | required      |
-| `-r`   | Minimum RTO in ms                        | —                           | set in #13    |
-| `-x`   | Max retransmissions of one packet before giving up | —                 | set in #13    |
+| `-r`   | Minimum RTO in ms                        | —                           | 200           |
+| `-x`   | Max retransmissions of one packet before giving up | —                 | 10            |
 | `-q`   | —                                        | Linger time in ms (4.2)     | 5000          |
 | `-h`   | Print usage and exit                     | Same                        | —             |
 
 `-p`, `-w` and `-k` must be the same on both ends. The protocol does not check this; the run
 scripts do.
+
+Until the RTO estimator (#13) exists, the sender uses `-r` as a fixed retransmission timeout.
+#13 may change the defaults of `-r`, `-x` and `-q`, and has to keep the rule on `-q` in 4.2 true
+once the RTO backs off. With the fixed timeout it holds: 10 × 200 ms plus one RTT is well under
+5000 ms.
 
 ### 5.2 Allowed values
 
@@ -294,7 +313,8 @@ scripts do.
 | `-k`   | `3 ≤ k ≤ 8`    | |
 | `-m`   | `1 … 65495`    | 65495 = largest UDP payload (65507) minus the 12-byte header. |
 | `-P`   | `1 … 65535`    | |
-| `-r`, `-x`, `-q` | positive integers | |
+| `-r`, `-q` | `1 … 2147483647` | 2147483647 = 2^31 − 1 = `INT_MAX` ms, about 24.8 days: `poll()` takes its timeout as an `int`. |
+| `-x`   | `1 … 4294967295` | 4294967295 = 2^32 − 1, the largest `unsigned`. |
 
 A value outside these ranges, an unknown option or a missing required option prints the usage and
 exits with status 2.
@@ -304,8 +324,8 @@ exits with status 2.
 | Status | Meaning |
 |-------:|---------|
 | 0      | Success. Sender: every packet acknowledged. Receiver: file complete and linger time over. |
-| 1      | The sender gave up after `-x` retransmissions of one packet (4.1). |
-| 2      | Invalid arguments, or a set-up error such as an unreadable input file or a socket that cannot be opened. |
+| 1      | The transfer failed. Sender: gave up after `-x` retransmissions of one packet (4.1). Receiver: `-q` ms of silence before the file was complete (4.2). |
+| 2      | Invalid arguments, a set-up error such as an unreadable input file or a socket that cannot be opened, or a system error during the run, such as an output or log file that cannot be written. |
 
 ### 5.4 Example
 
