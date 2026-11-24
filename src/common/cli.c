@@ -9,6 +9,7 @@
 #include <unistd.h>
 
 #include "packet.h"
+#include "rto.h"
 
 static const char *role_name(enum role role)
 {
@@ -27,11 +28,11 @@ static void usage(FILE *out, enum role role)
                 "  -w  window size, 1..2^k (default %d, ignored with sw)\n"
                 "  -k  sequence-number width in bits, 3..8 (default %d)\n"
                 "  -m  max payload in bytes, 1..%d (default %d)\n"
-                "  -r  minimum RTO in ms, also its least margin above the smoothed RTT (default %d)\n"
+                "  -r  minimum RTO in ms, 1..%d, also its least margin above the smoothed RTT (default %d)\n"
                 "  -x  retransmissions of one packet before giving up (default %d)\n"
                 "  -h  print this help\n",
                 DEFAULT_W, DEFAULT_K, MAX_PAYLOAD, DEFAULT_MAX_PAYLOAD,
-                DEFAULT_MIN_RTO_MS, DEFAULT_MAX_RETX);
+                RTO_MAX_MS - 1, DEFAULT_MIN_RTO_MS, DEFAULT_MAX_RETX);
     } else {
         fprintf(out,
                 "usage: receiver -p sw|gbn|sr -f FILE -P PORT -L LOG [-w W] [-k K] [-q MS]\n"
@@ -153,9 +154,9 @@ enum cli_result cli_parse(int argc, char **argv, enum role role, struct config *
                 return bad_value(role, c, optarg, "a file name");
             cfg->log_path = optarg;
             break;
-        case 'r': // times in ms end up in poll(), which takes an int
-            if (!parse_uint(optarg, 1, INT_MAX, &v))
-                return bad_value(role, c, optarg, "1..2147483647");
+        case 'r': // from RTO_MAX_MS on, rto_init() raises the maximum to -r: a fixed timeout
+            if (!parse_uint(optarg, 1, RTO_MAX_MS - 1, &v))
+                return bad_value(role, c, optarg, "1..1999");
             cfg->min_rto_ms = (unsigned)v;
             break;
         case 'x':
@@ -163,7 +164,7 @@ enum cli_result cli_parse(int argc, char **argv, enum role role, struct config *
                 return bad_value(role, c, optarg, "a positive integer");
             cfg->max_retx = (unsigned)v;
             break;
-        case 'q':
+        case 'q': // ends up in poll(), which takes an int
             if (!parse_uint(optarg, 1, INT_MAX, &v))
                 return bad_value(role, c, optarg, "1..2147483647");
             cfg->linger_ms = (unsigned)v;

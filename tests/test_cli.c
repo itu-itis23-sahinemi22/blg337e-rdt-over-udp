@@ -136,10 +136,10 @@ static void test_bad_values(void)
     check(PARSE(ROLE_SENDER, &cfg, SENDER_REQUIRED, "-k", "") == CLI_ERROR, "-k \"\" (empty)");
     check(PARSE(ROLE_SENDER, &cfg, SENDER_REQUIRED, "-r", "99999999999999999999999") == CLI_ERROR,
           "-r 99999999999999999999999 (overflow)");
-    check(PARSE(ROLE_SENDER, &cfg, SENDER_REQUIRED, "-r", "2147483647") == CLI_OK,
-          "-r 2147483647 (INT_MAX) is ok");
-    check(PARSE(ROLE_SENDER, &cfg, SENDER_REQUIRED, "-r", "2147483648") == CLI_ERROR,
-          "-r 2147483648 (INT_MAX + 1, too long for poll())");
+    check(PARSE(ROLE_SENDER, &cfg, SENDER_REQUIRED, "-r", "1999") == CLI_OK,
+          "-r 1999 (RTO_MAX_MS - 1) is ok");
+    check(PARSE(ROLE_SENDER, &cfg, SENDER_REQUIRED, "-r", "2000") == CLI_ERROR,
+          "-r 2000 (RTO_MAX_MS: the RTO would be fixed at -r)");
     check(PARSE(ROLE_RECEIVER, &cfg, RECEIVER_REQUIRED, "-q", "2147483647") == CLI_OK,
           "-q 2147483647 (INT_MAX) is ok");
     check(PARSE(ROLE_RECEIVER, &cfg, RECEIVER_REQUIRED, "-q", "2147483648") == CLI_ERROR,
