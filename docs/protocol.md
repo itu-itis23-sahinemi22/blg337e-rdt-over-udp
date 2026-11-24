@@ -165,7 +165,7 @@ the sender.
 
 ### 5.1 Estimator
 
-Before the first sample, `RTO = 1 s`. With an RTT sample `R`:
+Before the first sample, `RTO = 1 s`, or `RTO_min` if that is larger. With an RTT sample `R`:
 
 ```
 first sample:   SRTT   = R
@@ -189,8 +189,8 @@ takes milliseconds; the time left is rounded up, so a timer never fires early.
 | Parameter | Value | Reason |
 |-----------|-------|--------|
 | `α`, `β`, `K` | 1/8, 1/4, 4 | The values of RFC 6298. Keeping the standard constants lets Experiment 3 compare our RTO with the standard estimator's, and 1/8 and 1/4 are exact in integer arithmetic. |
-| Initial RTO | 1 s | RFC 6298 (2.1). It is longer than the RTT of the first packet in every experiment: at most about 450 ms, at 200 ms propagation delay with 20 ms jitter each way. So the first packet is never resent before its ACK could arrive. |
-| `RTO_min` | `-r`, default 200 ms | Linux's minimum RTO. RFC 6298 (2.4) asks for 1 s as a conservative choice for the Internet, where a TCP receiver may also delay its ACKs by up to 500 ms (RFC 1122). Here the path is the emulator and the receiver acknowledges every packet at once. At the baseline (about 48 ms RTT with Stop-and-Wait), a loss costs an RTO of about 250 ms, 5 RTTs; with a 1 s minimum it would cost about 20 RTTs and dominate Experiment 2. 200 ms is still far above the few milliseconds of scheduling delay that three processes on one machine can add. |
+| Initial RTO | 1 s, or `RTO_min` if larger | RFC 6298 (2.1). It is longer than the RTT of the first packet in every experiment: at most about 450 ms, at 200 ms propagation delay with 20 ms jitter each way. So the first packet is never resent before its ACK could arrive. |
+| `RTO_min` | `-r`, 1–1999 ms, default 200 ms | Linux's minimum RTO. RFC 6298 (2.4) asks for 1 s as a conservative choice for the Internet, where a TCP receiver may also delay its ACKs by up to 500 ms (RFC 1122). Here the path is the emulator and the receiver acknowledges every packet at once. At the baseline (about 48 ms RTT with Stop-and-Wait), a loss costs an RTO of about 250 ms, 5 RTTs; with a 1 s minimum it would cost about 20 RTTs and dominate Experiment 2. 200 ms is still far above the few milliseconds of scheduling delay that three processes on one machine can add. `-r` must stay below `RTO_max`; from 2 s on the RTO would stay fixed at `-r` (#46, interfaces §5.2). |
 | Margin above `SRTT` | `max(RTO_min, K · RTTVAR)` | RFC 6298 uses `max(G, K · RTTVAR)`, with `G` the clock granularity (1 ms with `poll()`). We use `RTO_min` in place of `G`, as Linux does. Without jitter every RTT is the same, and `RTTVAR` shrinks to 0 (it is multiplied by 3/4 at every sample). The RFC formula then gives `RTO = SRTT + 1 ms`. With `W = 32` at the baseline, the queue makes the RTT about 265 ms, which is above `RTO_min` itself, so the minimum would not help: an ACK 2 ms late would trigger a needless retransmission. With our margin the RTO stays at least `RTO_min` above `SRTT`. |
 | `RTO_max` | 2 s | RFC 6298 (2.5) allows a maximum only if it is at least 60 s, for paths whose RTT nobody knows. Here the emulator sets the RTT, and the largest one in the experiments is about 1 s: Selective Repeat with `W = 64` at 200 ms delay sends its whole first window at once, and its last packet waits 522 ms in the queue behind the other 63 (63 × 1036 bytes at 1 Mbit/s), on top of the 408 ms RTT and up to 40 ms of jitter: about 970 ms. 2 s stays above that plus the 200 ms margin. It also bounds how long a sender that has not given up can stay silent, which sets the receiver's linger time `-q` (interfaces §4.2): with a 60 s maximum, `-q` would have to be at least ten minutes. |
 | Backoff | × 2 per timeout, up to `RTO_max` | RFC 6298 (5.5). If the RTT has suddenly grown, the doubled RTO soon exceeds it. Karn's rule (5.3) means retransmitted packets give no samples, so without the backoff the RTO would never catch up. |
