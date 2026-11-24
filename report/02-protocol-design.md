@@ -116,7 +116,7 @@ $$
 \mathit{RTO} = \min\bigl(\mathit{RTO}_ {\max},\ \mathit{SRTT} + \max(\mathit{RTO}_ {\min},\ K \cdot \mathit{RTTVAR})\bigr)
 $$
 
-The first sample sets $\mathit{SRTT} = R$ and $\mathit{RTTVAR} = R/2$; before it, the RTO is 1 s.
+The first sample sets $\mathit{SRTT} = R$ and $\mathit{RTTVAR} = R/2$; before it, the RTO is 1 s, or $\mathit{RTO}_ {\min}$ if that is larger.
 Every timeout doubles the RTO, up to $\mathit{RTO}_ {\max}$, and the next sample computes it again
 from $\mathit{SRTT}$ and $\mathit{RTTVAR}$, which undoes the backoff. All values are integer
 microseconds.
@@ -124,8 +124,8 @@ microseconds.
 | Parameter | Value | Reason |
 |-----------|-------|---------------------------------------------------------------------|
 | $\alpha$, $\beta$, $K$ | 1/8, 1/4, 4 | The values of RFC 6298, so that Experiment 3 shows how the standard estimator follows the RTT. |
-| Initial RTO | 1 s | RFC 6298. It is longer than the RTT of the first packet in every experiment, which is at most about 450 ms (200 ms delay each way, with 10 % jitter). |
-| $\mathit{RTO}_ {\min}$ | 200 ms (`-r`) | Linux's minimum RTO. RFC 6298 asks for 1 s, a conservative value for the Internet, where a receiver may delay its ACKs by up to 500 ms; ours acknowledges every packet at once. At the baseline, where the RTT of Stop-and-Wait is about 48 ms, a loss then costs an RTO of about 250 ms, 5 RTTs, instead of about 20 RTTs. |
+| Initial RTO | 1 s, or $\mathit{RTO}_ {\min}$ if larger | RFC 6298. It is longer than the RTT of the first packet in every experiment, which is at most about 450 ms (200 ms delay each way, with 10 % jitter). |
+| $\mathit{RTO}_ {\min}$ | 200 ms (`-r`, at most 1999 ms) | Linux's minimum RTO. RFC 6298 asks for 1 s, a conservative value for the Internet, where a receiver may delay its ACKs by up to 500 ms; ours acknowledges every packet at once. At the baseline, where the RTT of Stop-and-Wait is about 48 ms, a loss then costs an RTO of about 250 ms, 5 RTTs, instead of about 20 RTTs. It must stay below $\mathit{RTO}_ {\max}$: from 2 s on, the RTO would stay fixed at `-r`. |
 | Margin above $\mathit{SRTT}$ | $\max(\mathit{RTO}_ {\min}, K \cdot \mathit{RTTVAR})$ | RFC 6298 uses the clock granularity $G$ (1 ms) in place of $\mathit{RTO}_ {\min}$. Without jitter every RTT is the same and $\mathit{RTTVAR}$ falls to 0, so the RTO would be only 1 ms above the RTT once the queue makes the RTT longer than $\mathit{RTO}_ {\min}$ (about 265 ms with $W = 32$ at the baseline). An ACK delayed by a few milliseconds of scheduling would then cause a needless retransmission. Like Linux, we keep $\mathit{RTO}_ {\min}$ as the least margin. |
 | $\mathit{RTO}_ {\max}$ | 2 s | RFC 6298 allows a maximum only from 60 s, for paths whose RTT nobody knows. Here the emulator sets the RTT, and the largest one in our experiments is about 1 s: Selective Repeat with $W = 64$ at 200 ms delay, whose first window waits in the queue. 2 s stays above it, and it bounds how long a retransmitting sender can stay silent, which sets the receiver's linger time (section 2.6). |
 | Backoff | $\times 2$ per timeout | RFC 6298. Under Karn's rule a retransmitted packet gives no sample, so if the RTT has grown beyond the RTO, only the backoff can raise it. |
