@@ -41,7 +41,7 @@ all $x$ retransmissions fail. If each attempt fails independently with probabili
 packet or its ACK is lost or corrupted), a transfer of $N$ packets gives up with probability
 
 $$
-P_{\text{give up}} = 1 - \left(1 - q^{x+1}\right)^N .
+P_ {\text{give up}} = 1 - \left(1 - q^{x+1}\right)^N .
 $$
 
 For the 256-packet test file and $x = 10$ this is about $3 \times 10^{-9}$ at $q = 0.1$,
@@ -63,8 +63,8 @@ happens if `-q` is shorter than the sender's longest silence (section 2.6), for 
 is raised without raising `-q`. The exit status of the sender therefore does not decide whether a
 transfer succeeded; the SHA-256 comparison does.
 
-**RTTs above the maximum RTO.** $\mathit{RTO}_{\max}$ is 2 s. Above an RTT of about 1.8 s the RTO
-keeps less than $\mathit{RTO}_{\min}$ of margin, so jitter starts to cause needless
+**RTTs above the maximum RTO.** $\mathit{RTO}_ {\max}$ is 2 s. Above an RTT of about 1.8 s the RTO
+keeps less than $\mathit{RTO}_ {\min}$ of margin, so jitter starts to cause needless
 retransmissions. Above 2 s every packet times out before its ACK arrives and is sent at least
 twice, and Karn's rule leaves no RTT samples, so the RTO stays at its maximum. The transfer still
 completes, at a much lower goodput, as long as the RTT stays below about $(x + 1) \times 2$ s
@@ -80,10 +80,10 @@ then 10 retransmissions 2 s apart. The run scripts therefore start the receiver 
 **Every loss costs a timeout.** The sender learns about a loss only when a timer expires. Go-Back-N
 ignores repeated ACKs instead of using them for a fast retransmission, there are no negative
 acknowledgments, and a corrupted packet is dropped exactly like a lost one. Each loss therefore
-costs at least $\mathit{SRTT} + \mathit{RTO}_{\min}$ of waiting, which the derivations of
+costs at least $\mathit{SRTT} + \mathit{RTO}_ {\min}$ of waiting, which the derivations of
 Experiment 2 (section 6) have to include.
 
-**The minimum RTO on short paths.** $\mathit{RTO}_{\min} = 200$ ms keeps needless retransmissions
+**The minimum RTO on short paths.** $\mathit{RTO}_ {\min} = 200$ ms keeps needless retransmissions
 away (section 2.5), but at the baseline, where the RTT of Stop-and-Wait is about 48 ms, every loss
 costs about 5 RTTs. A smaller `-r` lowers this cost at the risk of retransmitting packets whose ACK
 is only late.
