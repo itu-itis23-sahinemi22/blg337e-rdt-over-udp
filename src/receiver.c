@@ -92,6 +92,25 @@ static int sw_on_data(struct receiver *r, uint32_t num, const uint8_t *payload, 
     return (int)num;
 }
 
+/*
+    Go-Back-N (section 3.1): delivered and discarded exactly as with Stop-and-Wait, but both
+    are answered with ACK expected, the next number wanted (cumulative). so a packet that
+    arrives too early, e.g. 1 when 0 was lost, is answered with ACK 0 and needs no special case.
+ */
+static int gbn_on_data(struct receiver *r, uint32_t num, const uint8_t *payload, uint16_t len,
+                       uint8_t flags)
+{
+    // after LAST the file is closed: nothing is delivered again, but expected is still
+    // acknowledged, which is what a retransmitted LAST needs when its ACK was lost
+    if (num == r->expected && !r->complete) {
+        deliver(r, num, payload, len, flags);
+        r->expected = (r->expected + 1) % r->modulus;
+    } else {
+        log_event("discard", TYPE_DATA, num, len, flags, "expected=%" PRIu32, r->expected);
+    }
+    return (int)r->expected;
+}
+
 /* sends ACK num back to where the DATA packet came from, i.e. the emulator (section 1) */
 static void send_ack(struct receiver *r, uint32_t num, const struct sockaddr_in *to,
                      socklen_t to_len)
@@ -214,7 +233,9 @@ int main(int argc, char **argv)
     case PROTO_SW:
         on_data = sw_on_data;
         break;
-    case PROTO_GBN: // #11
+    case PROTO_GBN:
+        on_data = gbn_on_data;
+        break;
     case PROTO_SR:  // #12
         fprintf(stderr, "receiver: -p %s is not implemented yet\n", protocol_name(cfg.proto));
         return 2;
