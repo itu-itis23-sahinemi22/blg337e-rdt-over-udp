@@ -27,7 +27,7 @@ static void usage(FILE *out, enum role role)
                 "  -w  window size, 1..2^k (default %d, ignored with sw)\n"
                 "  -k  sequence-number width in bits, 3..8 (default %d)\n"
                 "  -m  max payload in bytes, 1..%d (default %d)\n"
-                "  -r  minimum RTO in ms (default %d)\n"
+                "  -r  minimum RTO in ms, also its least margin above the smoothed RTT (default %d)\n"
                 "  -x  retransmissions of one packet before giving up (default %d)\n"
                 "  -h  print this help\n",
                 DEFAULT_W, DEFAULT_K, MAX_PAYLOAD, DEFAULT_MAX_PAYLOAD,

@@ -7,13 +7,22 @@
 enum protocol { PROTO_SW, PROTO_GBN, PROTO_SR };
 enum role     { ROLE_SENDER, ROLE_RECEIVER };
 
-/* defaults of section 5.1. -r and -x are provisional until the RTO work in #13 */
+/*
+    defaults of section 5.1.
+    -r 200 ms: Linux's minimum RTO. the RTO also stays at least this much above SRTT (see
+    rto_sample()), so a few ms of scheduling delay in any of the three programs never resends
+    a packet for nothing. at the baseline (48 ms RTT with Stop-and-Wait) a loss then costs
+    an RTO of about 250 ms, 5 RTTs.
+    -q must outlast the longest silence of a sender that has not given up (section 4.2):
+    -x retransmissions at most RTO_MAX_MS (2 s) apart, plus one RTT, which is below 2 s
+    whenever the protocol works at all. 10 x 2 s + 2 s = 22 s, so 25 s.
+ */
 #define DEFAULT_W           16
 #define DEFAULT_K           7
 #define DEFAULT_MAX_PAYLOAD 1024
 #define DEFAULT_MIN_RTO_MS  200
 #define DEFAULT_MAX_RETX    10
-#define DEFAULT_LINGER_MS   5000
+#define DEFAULT_LINGER_MS   25000
 
 /*
     every run-time parameter of one program.
@@ -27,7 +36,7 @@ struct config {
     const char *file;     /* sender: file to send, receiver: file to write */
     uint16_t port;        /* sender: emulator port E, receiver: own port R */
     const char *log_path;
-    unsigned min_rto_ms;  /* sender only; in #6 also the fixed timeout */
+    unsigned min_rto_ms;  /* sender only: minimum RTO, also its least margin above SRTT */
     unsigned max_retx;    /* sender only */
     unsigned linger_ms;   /* receiver only */
 };
