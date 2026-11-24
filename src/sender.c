@@ -1,5 +1,6 @@
 /* Sender: splits the file into packets and runs SW / GBN / SR (#6, #11, #12, #13). */
 #include <errno.h>
+#include <inttypes.h>
 #include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -12,6 +13,7 @@
 #include "cli.h"
 #include "log.h"
 #include "packet.h"
+#include "rto.h"
 #include "udp.h"
 
 /* -w is at most 2^k and k at most 8 (section 5.2), so no window holds more packets */
@@ -26,6 +28,7 @@ struct sender {
     size_t size;
     size_t count;           /* number of DATA packets, at least 1 */
     uint32_t modulus;       /* 2^k */
+    struct rto rto;         /* the retransmission timeout every timer uses */
 };
 
 /* prints and logs a run-time error, followed by errno's text */
@@ -142,6 +145,33 @@ static int recv_ack(struct sender *s, uint32_t *num)
     return 1;
 }
 
+/* logs the current RTO and the averages behind it; reason says what changed it */
+static void log_rto(const struct sender *s, const char *reason)
+{
+    log_event("rto_update", 0, 0, 0, 0,
+              "rto_us=%" PRIu64 " srtt_us=%" PRIu64 " rttvar_us=%" PRIu64 " reason=%s",
+              s->rto.rto_us, s->rto.srtt_us, s->rto.rttvar_us, reason);
+}
+
+/*
+    packet i was acknowledged rtt_us after it was sent: one sample for the estimator.
+    Karn's rule is checked by the callers: only a packet that was never retransmitted gets here.
+ */
+static void take_sample(struct sender *s, size_t i, uint64_t rtt_us)
+{
+    rto_sample(&s->rto, rtt_us);
+    log_event("rtt_sample", TYPE_DATA, (uint32_t)(i % s->modulus), payload_len(s, i), last_flag(s, i),
+              "rtt_us=%" PRIu64, rtt_us);
+    log_rto(s, "sample");
+}
+
+/* a timer expired: the RTO doubles until the next sample (RFC 6298 5.5) */
+static void back_off(struct sender *s)
+{
+    rto_backoff(&s->rto);
+    log_rto(s, "backoff");
+}
+
 /* ms left until deadline (now_us() time), rounded up so poll() does not wake just before it */
 static int ms_until(uint64_t deadline)
 {
@@ -154,24 +184,23 @@ static int ms_until(uint64_t deadline)
 
 /*
     Stop-and-Wait: send packet i, wait for ACK i mod 2^k, then the next one.
-    the timer is a deadline, not a period: an ACK that is ignored does not restart it,
-    otherwise a stream of wrong ACKs could postpone the retransmission forever.
-    the timeout is fixed (-r) until the RTO estimator of #13.
+    the timer runs for one RTO from the last transmission. an ACK that is ignored does not
+    restart it, otherwise a stream of wrong ACKs could postpone the retransmission forever.
+    the ACK of a packet sent only once is an RTT sample; after a retransmission there is
+    none (Karn's rule), and the backed-off RTO stays for the next packet.
     returns the exit status: 0 done, 1 gave up, 2 error.
  */
 static int sw_run(struct sender *s)
 {
-    uint64_t timeout_us = (uint64_t)s->cfg->min_rto_ms * 1000;
-
     for (size_t i = 0; i < s->count; i++) {
         uint32_t seq = (uint32_t)(i % s->modulus);
         unsigned retx = 0;
 
         send_data(s, i, 0);
-        uint64_t deadline = now_us() + timeout_us;
+        uint64_t sent_at = now_us(); // the timer starts with every transmission
 
         for (;;) {
-            int left = ms_until(deadline);
+            int left = ms_until(sent_at + s->rto.rto_us);
             if (left == 0) {
                 log_event("timeout", TYPE_DATA, seq, payload_len(s, i), last_flag(s, i),
                           "retx=%u", retx);
@@ -184,7 +213,8 @@ static int sw_run(struct sender *s)
                 }
                 retx++;
                 send_data(s, i, 1);
-                deadline = now_us() + timeout_us;
+                back_off(s);
+                sent_at = now_us();
                 continue;
             }
 
@@ -203,7 +233,10 @@ static int sw_run(struct sender *s)
             if (got == 0)
                 continue;
             if (ack == seq) {
+                uint64_t now = now_us();
                 log_event("ack", TYPE_ACK, ack, 0, 0, NULL);
+                if (retx == 0)
+                    take_sample(s, i, now - sent_at);
                 break;
             }
             log_event("ack_ignored", TYPE_ACK, ack, 0, 0, "expected=%u", (unsigned)seq);
@@ -221,29 +254,32 @@ static int sw_run(struct sender *s)
     base and next are packet indices: they count from 0 and never wrap. only the sequence
     numbers on the wire are taken mod 2^k. so next - base is always the number of packets
     outstanding, even with W = 2^k, where d(next, base) would be 0.
-    the timer is a deadline, as in sw_run: only an ACK that moves base restarts it.
+    the timer runs for one RTO, as in sw_run: only an ACK that moves base restarts it.
+    an ACK that moves base is an RTT sample of the newest packet it acknowledges, the one
+    whose arrival made the receiver send it, if that packet was sent only once (Karn's rule).
     returns the exit status: 0 done, 1 gave up, 2 error.
  */
 static int gbn_run(struct sender *s)
 {
-    uint64_t timeout_us = (uint64_t)s->cfg->min_rto_ms * 1000;
-    unsigned retx[MAX_WINDOW]; // retransmissions of packet i, in slot i % MAX_WINDOW
-    size_t base = 0;           // oldest unacknowledged packet
-    size_t next = 0;           // next packet to send for the first time
-    uint64_t deadline = 0;     // timer of packet base; only used while base < next
+    unsigned retx[MAX_WINDOW];    // retransmissions of packet i, in slot i % MAX_WINDOW
+    uint64_t sent_at[MAX_WINDOW]; // first transmission of packet i, for its RTT sample
+    size_t base = 0;              // oldest unacknowledged packet
+    size_t next = 0;              // next packet to send for the first time
+    uint64_t timer = 0;           // start of the timer of packet base; only used while base < next
 
     while (base < s->count) {
         // fill the window; at most W packets are outstanding, so their slots never collide
         while (next < s->count && next - base < s->cfg->w) {
             send_data(s, next, 0);
+            sent_at[next % MAX_WINDOW] = now_us();
             retx[next % MAX_WINDOW] = 0;
             if (next == base) // the window was empty: the timer starts with this packet
-                deadline = now_us() + timeout_us;
+                timer = sent_at[next % MAX_WINDOW];
             next++;
         }
 
         uint32_t base_seq = (uint32_t)(base % s->modulus);
-        int left = ms_until(deadline);
+        int left = ms_until(timer + s->rto.rto_us);
         if (left == 0) {
             // base was sent first and every timeout resends all outstanding packets,
             // so no packet has been retransmitted more often than base
@@ -261,7 +297,8 @@ static int gbn_run(struct sender *s)
                 retx[i % MAX_WINDOW]++;
                 send_data(s, i, 1);
             }
-            deadline = now_us() + timeout_us;
+            back_off(s);
+            timer = now_us();
             continue;
         }
 
@@ -279,6 +316,7 @@ static int gbn_run(struct sender *s)
             return 2;
         if (got == 0)
             continue;
+        uint64_t now = now_us();
 
         // ACK num means "every packet before num", so it acknowledges d(num, base) packets.
         // 0 (a repeat of base) or more than are outstanding acknowledges nothing new
@@ -289,8 +327,12 @@ static int gbn_run(struct sender *s)
         }
         base += acked;
         log_event("ack", TYPE_ACK, ack, 0, 0, "acked=%u", (unsigned)acked);
+
+        size_t newest = base - 1; // its slot is reused only by the next fill
+        if (retx[newest % MAX_WINDOW] == 0)
+            take_sample(s, newest, now - sent_at[newest % MAX_WINDOW]);
         if (base < next) // the timer now belongs to the new oldest packet
-            deadline = now_us() + timeout_us;
+            timer = now;
     }
 
     // the completion-time metric ends here (section 4.1)
@@ -305,12 +347,15 @@ static int gbn_run(struct sender *s)
     outstanding packet, and base then slides past every acknowledged packet at its start.
     a packet's timer starts with its last transmission. instead of W separate timers the
     loop waits for the one that expires first: the unacknowledged packet sent longest ago.
-    the timeout is fixed (-r) until the RTO estimator of #13.
+    every timer lasts the current RTO, read again on every turn, so a running timer follows
+    a new RTO. this matters in the first window of a large W: each packet waits longer in the
+    emulator's queue than the one before, and the samples raise the RTO before the later
+    timers run out. a timer fixed at send time would expire first and resend for nothing.
+    every ACK of a packet sent only once is an RTT sample (Karn's rule).
     returns the exit status: 0 done, 1 gave up, 2 error.
  */
 static int sr_run(struct sender *s)
 {
-    uint64_t timeout_us = (uint64_t)s->cfg->min_rto_ms * 1000;
     unsigned retx[MAX_WINDOW];    // retransmissions of packet i, in slot i % MAX_WINDOW
     uint64_t sent_at[MAX_WINDOW]; // last transmission of packet i: its timer started then
     uint8_t acked[MAX_WINDOW];    // packet i is acknowledged, but base has not passed it yet
@@ -337,7 +382,7 @@ static int sr_run(struct sender *s)
         }
 
         size_t slot = oldest % MAX_WINDOW;
-        int left = ms_until(sent_at[slot] + timeout_us);
+        int left = ms_until(sent_at[slot] + s->rto.rto_us);
         if (left == 0) {
             uint32_t seq = (uint32_t)(oldest % s->modulus);
             log_event("timeout", TYPE_DATA, seq, payload_len(s, oldest), last_flag(s, oldest),
@@ -351,6 +396,7 @@ static int sr_run(struct sender *s)
             }
             retx[slot]++;
             send_data(s, oldest, 1);
+            back_off(s);
             sent_at[slot] = now_us();
             continue;
         }
@@ -369,6 +415,7 @@ static int sr_run(struct sender *s)
             return 2;
         if (got == 0)
             continue;
+        uint64_t now = now_us();
 
         // ACK num acknowledges the one packet that carries num. d(num, base) is its offset
         // in the window; an offset past the packets outstanding (an old ACK, e.g. a repeat
@@ -379,12 +426,15 @@ static int sr_run(struct sender *s)
             log_event("ack_ignored", TYPE_ACK, ack, 0, 0, "base=%u", (unsigned)base_seq);
             continue;
         }
-        acked[(base + off) % MAX_WINDOW] = 1;
+        size_t i = base + off;
+        acked[i % MAX_WINDOW] = 1;
 
         size_t old_base = base;
         while (base < next && acked[base % MAX_WINDOW])
             base++;
         log_event("ack", TYPE_ACK, ack, 0, 0, "slid=%zu", base - old_base);
+        if (retx[i % MAX_WINDOW] == 0) // the slot is reused only by the next fill
+            take_sample(s, i, now - sent_at[i % MAX_WINDOW]);
     }
 
     // the completion-time metric ends here (section 4.1)
@@ -398,17 +448,20 @@ static int send_file(const struct config *cfg, int (*run)(struct sender *))
     struct sender s = { .cfg = cfg, .fd = -1, .dst = udp_addr(cfg->port), .modulus = 1u << cfg->k };
     int status = 2;
 
+    rto_init(&s.rto, (uint64_t)cfg->min_rto_ms * 1000, (uint64_t)RTO_MAX_MS * 1000);
+
     if (load_file(&s) < 0) {
         report_error("cannot read %s", cfg->file);
     } else if ((s.fd = udp_open(0)) < 0) {
         report_error("cannot open a UDP socket");
     } else {
         log_event("start", 0, 0, 0, 0,
-                  "proto=%s w=%u k=%u m=%u port=%u local_port=%u timeout_ms=%u max_retx=%u "
-                  "bytes=%zu packets=%zu file=%s",
+                  "proto=%s w=%u k=%u m=%u port=%u local_port=%u min_rto_ms=%u max_rto_ms=%u "
+                  "max_retx=%u bytes=%zu packets=%zu file=%s",
                   protocol_name(cfg->proto), cfg->w, cfg->k, cfg->max_payload, (unsigned)cfg->port,
-                  (unsigned)udp_local_port(s.fd), cfg->min_rto_ms, cfg->max_retx, s.size, s.count,
-                  cfg->file);
+                  (unsigned)udp_local_port(s.fd), cfg->min_rto_ms, (unsigned)(s.rto.max_us / 1000),
+                  cfg->max_retx, s.size, s.count, cfg->file);
+        log_rto(&s, "init"); // the RTO series of Experiment 3 starts here
         if (!window_is_safe(cfg)) {
             unsigned limit = max_safe_window(cfg->proto, cfg->k);
             fprintf(stderr, "sender: warning: window %u is above the safe limit %u for %s\n",

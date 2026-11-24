@@ -51,7 +51,7 @@ static void test_defaults(void)
     check(cfg.min_rto_ms == 200 && cfg.max_retx == 10, "sender defaults: r 200, x 10");
 
     check(PARSE(ROLE_RECEIVER, &cfg, RECEIVER_REQUIRED) == CLI_OK, "receiver with only the required options is ok");
-    check(cfg.linger_ms == 5000 && cfg.port == 9002, "receiver defaults: q 5000");
+    check(cfg.linger_ms == 25000 && cfg.port == 9002, "receiver defaults: q 25000");
 }
 
 /*
