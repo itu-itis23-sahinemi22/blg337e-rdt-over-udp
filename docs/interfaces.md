@@ -305,7 +305,7 @@ scripts do.
 The sender estimates its retransmission timeout from RTT samples as in RFC 6298 (#13), with
 `RTO = SRTT + max(-r, 4 · RTTVAR)`: like Linux, it uses the minimum in place of the clock
 granularity, so the RTO always stays at least `-r` above the smoothed RTT. The RTO starts at 1 s,
-is at most 2 s, and doubles on every timeout until the next sample. Only packets that were never
+or at `-r` if that is larger, is at most 2 s, and doubles on every timeout until the next sample. Only packets that were never
 retransmitted give samples (Karn's rule). The protocol specification (#24) gives the reasons for
 these values. The 2 s maximum is what sets the default of `-q` (4.2).
 
@@ -318,7 +318,8 @@ these values. The 2 s maximum is what sets the default of `-q` (4.2).
 | `-k`   | `3 ≤ k ≤ 8`    | |
 | `-m`   | `1 … 65495`    | 65495 = largest UDP payload (65507) minus the 12-byte header. |
 | `-P`   | `1 … 65535`    | |
-| `-r`, `-q` | `1 … 2147483647` | 2147483647 = 2^31 − 1 = `INT_MAX` ms, about 24.8 days: `poll()` takes its timeout as an `int`. |
+| `-r`   | `1 … 1999`     | Below the 2 s maximum RTO (5.1). From 2000 on, the maximum would have to give way to the minimum, and the RTO would stay fixed at `-r`: a fixed timeout, with no upper bound for the `-q` rule of 4.2. |
+| `-q`   | `1 … 2147483647` | 2147483647 = 2^31 − 1 = `INT_MAX` ms, about 24.8 days: `poll()` takes its timeout as an `int`. |
 | `-x`   | `1 … 4294967295` | 4294967295 = 2^32 − 1, the largest `unsigned`. |
 
 A value outside these ranges, an unknown option or a missing required option prints the usage and
