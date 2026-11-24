@@ -3,6 +3,7 @@
 #include <inttypes.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -12,16 +13,28 @@
 #include "packet.h"
 #include "udp.h"
 
-/* state shared by every protocol; GBN and SR add their own fields here */
+/* k is at most 8, so there are at most 256 sequence numbers */
+#define MAX_SEQ 256
+
+/* a packet that Selective Repeat holds until every packet before it is delivered */
+struct sr_slot {
+    int stored;
+    uint8_t *data; /* malloc'ed copy of the payload; NULL when len is 0 */
+    uint16_t len;
+    uint8_t flags;
+};
+
+/* state shared by every protocol; SR adds its receive buffer */
 struct receiver {
     const struct config *cfg;
     int fd;
     FILE *out;         /* NULL once the file is complete */
     uint32_t modulus;  /* 2^k */
-    uint32_t expected; /* SW and GBN: the next sequence number to deliver */
+    uint32_t expected; /* the next sequence number to deliver; with SR also the start of the window */
     uint64_t bytes;    /* delivered so far */
     int complete;      /* LAST delivered and the file closed */
     int failed;        /* the output file could not be written */
+    struct sr_slot sr_buf[MAX_SEQ]; /* SR: packets inside the window, indexed by sequence number */
 };
 
 #define NO_ACK (-1)
@@ -109,6 +122,66 @@ static int gbn_on_data(struct receiver *r, uint32_t num, const uint8_t *payload,
         log_event("discard", TYPE_DATA, num, len, flags, "expected=%" PRIu32, r->expected);
     }
     return (int)r->expected;
+}
+
+/*
+    Selective Repeat (section 3.1): the receive window holds the W numbers from expected on.
+    - inside it, d(num, expected) < W: num == expected is delivered, followed by every stored
+      packet that is now in order; any other new packet is stored until then. answered with ACK num.
+    - just below it, 1 <= d(expected, num) <= W: delivered already, so discarded, but answered
+      with ACK num again, as the sender may not have its first ACK.
+    - anywhere else: discarded without an ACK.
+    with W > 2^(k-1) a number can be inside the window and below it at the same time. inside
+    wins, so an old packet is taken for a new one: the failure Experiment 5 shows.
+ */
+static int sr_on_data(struct receiver *r, uint32_t num, const uint8_t *payload, uint16_t len,
+                      uint8_t flags)
+{
+    uint32_t ahead = (num + r->modulus - r->expected) % r->modulus;  // d(num, expected)
+    uint32_t behind = (r->expected + r->modulus - num) % r->modulus; // d(expected, num)
+
+    if (ahead >= r->cfg->w) {
+        log_event("discard", TYPE_DATA, num, len, flags, "expected=%" PRIu32, r->expected);
+        return behind <= r->cfg->w ? (int)num : NO_ACK;
+    }
+
+    // after LAST the file is closed: nothing is stored or delivered again
+    struct sr_slot *slot = &r->sr_buf[num];
+    if (r->complete || slot->stored) {
+        log_event("discard", TYPE_DATA, num, len, flags, "expected=%" PRIu32, r->expected);
+        return (int)num;
+    }
+
+    if (num != r->expected) {
+        // the receive buffer gets its own copy: buf in run() is overwritten by the next datagram
+        if (len > 0) {
+            slot->data = malloc(len);
+            if (slot->data == NULL) {
+                report_error("cannot buffer packet %" PRIu32, num);
+                r->failed = 1;
+                return NO_ACK;
+            }
+            memcpy(slot->data, payload, len);
+        }
+        slot->stored = 1;
+        slot->len = len;
+        slot->flags = flags;
+        log_event("buffer", TYPE_DATA, num, len, flags, "expected=%" PRIu32, r->expected);
+        return (int)num;
+    }
+
+    deliver(r, num, payload, len, flags);
+    r->expected = (r->expected + 1) % r->modulus;
+
+    // every stored packet that is now in order, up to the first gap or LAST
+    while (!r->failed && !r->complete && r->sr_buf[r->expected].stored) {
+        struct sr_slot *held = &r->sr_buf[r->expected];
+        deliver(r, r->expected, held->data, held->len, held->flags);
+        free(held->data);
+        *held = (struct sr_slot){ 0 };
+        r->expected = (r->expected + 1) % r->modulus;
+    }
+    return (int)num;
 }
 
 /* sends ACK num back to where the DATA packet came from, i.e. the emulator (section 1) */
@@ -215,6 +288,8 @@ static int receive_file(const struct config *cfg, data_handler on_data)
         fclose(r.out);
     if (r.fd >= 0)
         close(r.fd);
+    for (unsigned i = 0; i < MAX_SEQ; i++) // SR packets still waiting for a gap to be filled
+        free(r.sr_buf[i].data);
     return status;
 }
 
@@ -236,9 +311,9 @@ int main(int argc, char **argv)
     case PROTO_GBN:
         on_data = gbn_on_data;
         break;
-    case PROTO_SR:  // #12
-        fprintf(stderr, "receiver: -p %s is not implemented yet\n", protocol_name(cfg.proto));
-        return 2;
+    case PROTO_SR:
+        on_data = sr_on_data;
+        break;
     }
 
     if (log_open(cfg.log_path, "receiver") < 0) {

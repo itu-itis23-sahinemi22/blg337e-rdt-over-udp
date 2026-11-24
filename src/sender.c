@@ -298,6 +298,100 @@ static int gbn_run(struct sender *s)
     return 0;
 }
 
+/*
+    Selective Repeat (section 3.2): up to W packets outstanding, individual ACKs, one timer
+    per packet. on timeout only that packet is sent again.
+    base and next are packet indices that never wrap, as in gbn_run. an ACK marks one
+    outstanding packet, and base then slides past every acknowledged packet at its start.
+    a packet's timer starts with its last transmission. instead of W separate timers the
+    loop waits for the one that expires first: the unacknowledged packet sent longest ago.
+    the timeout is fixed (-r) until the RTO estimator of #13.
+    returns the exit status: 0 done, 1 gave up, 2 error.
+ */
+static int sr_run(struct sender *s)
+{
+    uint64_t timeout_us = (uint64_t)s->cfg->min_rto_ms * 1000;
+    unsigned retx[MAX_WINDOW];    // retransmissions of packet i, in slot i % MAX_WINDOW
+    uint64_t sent_at[MAX_WINDOW]; // last transmission of packet i: its timer started then
+    uint8_t acked[MAX_WINDOW];    // packet i is acknowledged, but base has not passed it yet
+    size_t base = 0;              // oldest unacknowledged packet
+    size_t next = 0;              // next packet to send for the first time
+
+    while (base < s->count) {
+        // fill the window; at most W packets are outstanding, so their slots never collide
+        while (next < s->count && next - base < s->cfg->w) {
+            size_t slot = next % MAX_WINDOW;
+            send_data(s, next, 0);
+            sent_at[slot] = now_us();
+            retx[slot] = 0;
+            acked[slot] = 0;
+            next++;
+        }
+
+        // the timer that expires first. base is never acknowledged (the window slides past
+        // acknowledged packets), so there is always at least one candidate
+        size_t oldest = base;
+        for (size_t i = base + 1; i < next; i++) {
+            if (!acked[i % MAX_WINDOW] && sent_at[i % MAX_WINDOW] < sent_at[oldest % MAX_WINDOW])
+                oldest = i;
+        }
+
+        size_t slot = oldest % MAX_WINDOW;
+        int left = ms_until(sent_at[slot] + timeout_us);
+        if (left == 0) {
+            uint32_t seq = (uint32_t)(oldest % s->modulus);
+            log_event("timeout", TYPE_DATA, seq, payload_len(s, oldest), last_flag(s, oldest),
+                      "retx=%u", retx[slot]);
+            if (retx[slot] == s->cfg->max_retx) {
+                fprintf(stderr, "sender: packet %u not acknowledged after %u retransmissions, giving up\n",
+                        (unsigned)seq, retx[slot]);
+                log_event("give_up", TYPE_DATA, seq, payload_len(s, oldest), last_flag(s, oldest),
+                          "retx=%u", retx[slot]);
+                return 1;
+            }
+            retx[slot]++;
+            send_data(s, oldest, 1);
+            sent_at[slot] = now_us();
+            continue;
+        }
+
+        int ready = udp_wait(s->fd, left);
+        if (ready < 0) {
+            report_error("poll");
+            return 2;
+        }
+        if (ready == 0)
+            continue; // the deadline has passed: the next turn handles the timeout
+
+        uint32_t ack;
+        int got = recv_ack(s, &ack);
+        if (got < 0)
+            return 2;
+        if (got == 0)
+            continue;
+
+        // ACK num acknowledges the one packet that carries num. d(num, base) is its offset
+        // in the window; an offset past the packets outstanding (an old ACK, e.g. a repeat
+        // for a packet base has passed) or a packet already acknowledged changes nothing
+        uint32_t base_seq = (uint32_t)(base % s->modulus);
+        uint32_t off = (ack + s->modulus - base_seq) % s->modulus;
+        if (off >= next - base || acked[(base + off) % MAX_WINDOW]) {
+            log_event("ack_ignored", TYPE_ACK, ack, 0, 0, "base=%u", (unsigned)base_seq);
+            continue;
+        }
+        acked[(base + off) % MAX_WINDOW] = 1;
+
+        size_t old_base = base;
+        while (base < next && acked[base % MAX_WINDOW])
+            base++;
+        log_event("ack", TYPE_ACK, ack, 0, 0, "slid=%zu", base - old_base);
+    }
+
+    // the completion-time metric ends here (section 4.1)
+    log_event("done", 0, 0, 0, 0, "bytes=%zu packets=%zu", s->size, s->count);
+    return 0;
+}
+
 /* loads the file, opens the socket, runs the protocol, frees both; returns the exit status */
 static int send_file(const struct config *cfg, int (*run)(struct sender *))
 {
@@ -348,9 +442,9 @@ int main(int argc, char **argv)
     case PROTO_GBN:
         run = gbn_run;
         break;
-    case PROTO_SR:  // #12
-        fprintf(stderr, "sender: -p %s is not implemented yet\n", protocol_name(cfg.proto));
-        return 2;
+    case PROTO_SR:
+        run = sr_run;
+        break;
     }
 
     if (log_open(cfg.log_path, "sender") < 0) {
