@@ -41,9 +41,10 @@ $(BUILD)/%.o: src/%.c
 	@mkdir -p $(@D)
 	$(COMPILE) -c -o $@ $<
 
+# The .d file adds headers to $^, so only the .c and .o files are passed to the compiler.
 $(BUILD)/tests/%: tests/%.c $(COMMON_OBJ)
 	@mkdir -p $(@D)
-	$(COMPILE) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+	$(COMPILE) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) $(LDLIBS)
 
 test: $(TEST_BIN)
 	@if [ -z "$(TEST_BIN)" ]; then echo "no tests yet"; fi
