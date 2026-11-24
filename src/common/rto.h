@@ -11,10 +11,11 @@
     upper limit of the RTO, in ms. RFC 6298 (2.5) asks for at least 60 s, for paths whose RTT
     nobody knows. here the emulator sets the RTT: the largest one in the experiments is about
     1 s. SR with W = 64 at 200 ms delay sends its whole first window at once, and the last of
-    those packets waits 530 ms in the queue (64 x 1036 bytes at 1 Mbit/s) on top of the 408 ms
-    RTT and up to 40 ms of jitter. 2 s stays above it plus the 200 ms margin of rto_sample(),
-    and it bounds how long a sender that has not given up can stay silent: -x retransmissions,
-    each at most 2 s apart. the receiver's -q must outlast that (section 4.2).
+    those packets waits 522 ms in the queue behind the other 63 (63 x 1036 bytes at 1 Mbit/s)
+    on top of the 408 ms RTT and up to 40 ms of jitter: about 970 ms. 2 s stays above it plus
+    the 200 ms margin of rto_sample(), and it bounds how long a sender that has not given up
+    can stay silent: -x retransmissions, each at most 2 s apart. the receiver's -q must outlast
+    that (section 4.2).
  */
 #define RTO_MAX_MS 2000
 
