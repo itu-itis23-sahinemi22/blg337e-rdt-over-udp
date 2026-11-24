@@ -1,6 +1,6 @@
-# CI (#7): build everything and run the unit tests on every pull request and every push to main.
-# The end-to-end smoke test (an SW transfer through the emulator, SHA-256 compared) is added
-# once run_one.sh exists (#10).
+# CI (#7): build everything, run the unit tests and the smoke test on every pull request and
+# every push to main. The smoke test runs the real sender and receiver directly over loopback;
+# once run_one.sh exists (#10), it also runs a transfer through the emulator.
 name: CI
 
 on:
@@ -27,3 +27,6 @@ jobs:
 
       - name: Unit tests
         run: make test CFLAGS="-O2 -g -Werror"
+
+      - name: Smoke test
+        run: make smoke CFLAGS="-O2 -g -Werror"

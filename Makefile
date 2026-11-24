@@ -2,6 +2,7 @@
 #
 #   make          build bin/sender, bin/receiver, bin/emulator
 #   make test     build and run every tests/*.c
+#   make smoke    end-to-end smoke test: the real sender and receiver over loopback
 #   make clean    remove build/ and bin/
 #
 # Extra flags can be passed without losing the required ones, e.g.
@@ -28,7 +29,7 @@ TEST_BIN   := $(TEST_SRC:tests/%.c=$(BUILD)/tests/%)
 
 COMPILE = $(CC) $(BASE_CPPFLAGS) $(CPPFLAGS) $(BASE_CFLAGS) $(CFLAGS)
 
-.PHONY: all test clean
+.PHONY: all test smoke clean
 .SECONDARY:
 
 all: $(BINARIES)
@@ -49,6 +50,9 @@ $(BUILD)/tests/%: tests/%.c $(COMMON_OBJ)
 test: $(TEST_BIN)
 	@if [ -z "$(TEST_BIN)" ]; then echo "no tests yet"; fi
 	@for t in $(TEST_BIN); do echo "== $$t"; ./$$t || exit 1; done
+
+smoke: $(BIN)/sender $(BIN)/receiver
+	@bash tests/smoke.sh
 
 clean:
 	rm -rf $(BUILD) $(BIN)
