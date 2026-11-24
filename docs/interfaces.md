@@ -251,6 +251,9 @@ A transfer ends with the `LAST` flag. There are no separate connection set-up or
   the RTO after backoff), plus one RTT as a margin. Otherwise the receiver can leave while the
   sender is still retransmitting: a retransmitted `LAST` packet then finds no receiver, or a
   transfer that was still running ends with status 1.
+  The RTO is at most 2 s (5.1), so each interval is at most 2 s and the RTT is below 2 s whenever
+  the protocol works at all. With the default `-x 10` the silence stays under 10 × 2 s + 2 s = 22 s,
+  which the default `-q` of 25 s outlasts. A run with a larger `-x` needs a larger `-q`.
 
 ### 4.3 Edge cases
 
@@ -291,18 +294,20 @@ only the required options is a baseline run.
 | `-f`   | File to send                             | File to write               | required      |
 | `-P`   | Emulator port `E` to send to             | Port `R` to listen on       | required      |
 | `-L`   | Log file                                 | Log file                    | required      |
-| `-r`   | Minimum RTO in ms                        | —                           | 200           |
+| `-r`   | Minimum RTO in ms, also its least margin above the smoothed RTT | —    | 200           |
 | `-x`   | Max retransmissions of one packet before giving up | —                 | 10            |
-| `-q`   | —                                        | Linger time in ms (4.2)     | 5000          |
+| `-q`   | —                                        | Linger time in ms (4.2)     | 25000         |
 | `-h`   | Print usage and exit                     | Same                        | —             |
 
 `-p`, `-w` and `-k` must be the same on both ends. The protocol does not check this; the run
 scripts do.
 
-Until the RTO estimator (#13) exists, the sender uses `-r` as a fixed retransmission timeout.
-#13 may change the defaults of `-r`, `-x` and `-q`, and has to keep the rule on `-q` in 4.2 true
-once the RTO backs off. With the fixed timeout it holds: 10 × 200 ms plus one RTT is well under
-5000 ms.
+The sender estimates its retransmission timeout from RTT samples as in RFC 6298 (#13), with
+`RTO = SRTT + max(-r, 4 · RTTVAR)`: like Linux, it uses the minimum in place of the clock
+granularity, so the RTO always stays at least `-r` above the smoothed RTT. The RTO starts at 1 s,
+is at most 2 s, and doubles on every timeout until the next sample. Only packets that were never
+retransmitted give samples (Karn's rule). The protocol specification (#24) gives the reasons for
+these values. The 2 s maximum is what sets the default of `-q` (4.2).
 
 ### 5.2 Allowed values
 
