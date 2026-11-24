@@ -1,0 +1,29 @@
+# CI (#7): build everything and run the unit tests on every pull request and every push to main.
+# The end-to-end smoke test (an SW transfer through the emulator, SHA-256 compared) is added
+# once run_one.sh exists (#10).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request: # any base branch, so stacked PRs are checked too
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10 # the UDP tests wait on sockets; a hang must not run for hours
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Compiler version
+        run: gcc --version
+
+      # -Werror only here: a new warning fails the PR, local builds stay as they are
+      - name: Build
+        run: make CFLAGS="-O2 -g -Werror"
+
+      - name: Unit tests
+        run: make test CFLAGS="-O2 -g -Werror"
