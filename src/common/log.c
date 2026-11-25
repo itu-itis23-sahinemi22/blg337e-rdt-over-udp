@@ -1,4 +1,4 @@
-/* Event log of sender and receiver; PROVISIONAL until #2 and #5 (see log.h). */
+/* Shared event logging implementation. */
 #include "log.h"
 
 #include <inttypes.h>
