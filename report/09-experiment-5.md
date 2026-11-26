@@ -98,11 +98,12 @@ linger time follows the rule of section 4.2 of `docs/interfaces.md`:
 $20 \times 2\,\text{s} + 2\,\text{s} = 42\,\text{s} < 45\,\text{s}$. Neither option is a baseline
 parameter of the assignment, and both are the same for every run of this experiment.
 
-This gives 38 runs: 8 and 16 for Go-Back-N, 5 and 9 for Selective Repeat. The windows above the
-safe limit print a warning and run anyway (section 5.2 of `docs/interfaces.md`). Each failing run
-is repeated three times to show that it fails in the same way every time. For each run we record
-whether the SHA-256 hashes match, the size of the received file and the exit status of both
-programs.
+This gives 38 windows: 8 and 16 for Go-Back-N, 5 and 9 for Selective Repeat. The windows above the
+safe limit print a warning and run anyway (section 5.2 of `docs/interfaces.md`). Each of these four
+failing windows runs three times, to show that it fails in the same way every time, so the
+experiment has 46 runs. All of them use seed 337, and `scripts/run_all.sh exp5` runs them into
+`runs/exp5/`. For each run we record whether the SHA-256 hashes match, the size of the received
+file and the exit status of both programs.
 
 ## 9.4 Expected outcome
 
