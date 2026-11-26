@@ -1,7 +1,4 @@
-/*
-    Event log of sender and receiver (issue #6).
-    PROVISIONAL: replaced as a whole by the log format of issue #2 and the helpers of issue #5.
- */
+/* Monotonic timestamps and CSV logging helpers. */
 #ifndef LOG_H
 #define LOG_H
 
