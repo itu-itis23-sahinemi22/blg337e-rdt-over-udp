@@ -335,17 +335,29 @@ exits with status 2.
 
 ### 5.4 Example
 
-A baseline Go-Back-N run. Start the receiver first, then the emulator, then the sender, so that the
-first DATA packet finds everything ready:
+A baseline Go-Back-N run. Start the receiver first, then the emulator,
+then the sender, so that the first DATA packet finds everything ready.
 
-```sh
+Create the runs/scratch directory before starting the programs:
+
+```
+mkdir -p runs/scratch
+```
+
+The input file test.bin must exist before starting the sender.
+Run each program in a separate terminal:
+
+```
 ./bin/receiver -p gbn -w 16 -k 7 -P 9002 -f received.bin -L runs/scratch/receiver.log
-./bin/emulator ...                                     # options in section 7
-./bin/sender   -p gbn -w 16 -k 7 -P 9001 -f test.bin   -L runs/scratch/sender.log
+./bin/emulator scenarios/baseline.conf
+./bin/sender -p gbn -w 16 -k 7 -P 9001 -f test.bin -L runs/scratch/sender.log
 ```
 
 Since `-w 16 -k 7` are the defaults, the same run can be started with
 `./bin/sender -p gbn -P 9001 -f test.bin -L runs/scratch/sender.log`.
+
+After the sender and receiver have exited, stop the emulator
+with SIGINT or SIGTERM to ensure that its log is flushed.
 
 
 
@@ -385,6 +397,10 @@ The total packet size is the payload length plus the 12-byte header.
 | rto_update | RTO estimator updated |
 | done | Transfer completed |
 | give_up | Transfer failed |
+| drop | Invalid packet rejected |
+| error | System or runtime error |
+| send_fail | Packet transmission failed |
+| warn | Warning about configuration or protocol behavior |
 
 ### 6.2 Receiver events
 
@@ -400,6 +416,9 @@ The total packet size is the payload length plus the 12-byte header.
 | complete | Output file completed |
 | exit | Receiver exited after lingering |
 | give_up | Transfer failed |
+| error | System or runtime error |
+| ack_fail | ACK transmission failed |
+| warn | Warning about configuration or protocol behavior |
 
 ### 6.3 Emulator events
 
@@ -416,9 +435,29 @@ The total packet size is the payload length plus the 12-byte header.
 | duplicate | Packet duplicated |
 | reorder | Packet held for reordering |
 
+
 The emulator records the original packet metadata before applying
-corruption. The info field includes the direction and the reason
-for impairment events where applicable.
+corruption.
+
+The info field uses space-separated key=value pairs.
+
+Packet-related emulator events include the following fields:
+
+- dir: data or ack.
+- id: Unique identifier assigned to each received datagram.
+- dup: 0 for the original packet, 1 for its duplicate.
+- reason: Reason for the event, where applicable.
+
+Packet IDs start at 1 and increase with each received datagram,
+including retransmissions.
+
+A duplicate retains the same ID as its original packet.
+
+Example:
+
+```
+dir=data id=12 dup=0 reason=queue_full
+```
 
 ### 6.4 Timing and analysis
 
@@ -427,10 +466,26 @@ All components use CLOCK_MONOTONIC.
 Completion time is measured from the first sender send event
 to the final accepted ACK that completes the transfer.
 
+Goodput is calculated as:
+
+goodput_bps = (file_size_bytes * 8) / completion_time_seconds
+
 Retransmission overhead is calculated using sender send and retx events.
+
+retransmission_overhead = retransmitted_bytes / total_transmitted_bytes
+
+Total transmitted bytes include both new and retransmitted
+DATA packets sent by the sender.
 
 Link utilization is calculated using emulator tx_start and tx_end
 events for new data packets, excluding retransmissions and duplicate copies.
+
+link_utilization = new_data_transmission_time / completion_time
+
+New data transmission time is the sum of tx_end - tx_start
+for DATA packets without the RETX flag.
+
+Both time values must use the same unit.
 
 RTT and RTO values are recorded in microseconds using the rtt_sample
 and rto_update events.
@@ -438,8 +493,11 @@ and rto_update events.
 Packet sizes used for retransmission overhead include the
 12-byte protocol header.
 
-Emulator transmission events include a unique packet identifier
-and a duplicate indicator in the info field.
+The id field is used to match tx_start and tx_end events.
+The dup field identifies duplicate copies.
+
+Duplicate copies are generated at the emulator output
+and do not produce separate tx_start or tx_end events.
 
 ## 7. Emulator Configuration and Scenario Format
 
@@ -463,13 +521,28 @@ Changing parameters does not require recompilation.
 - All configuration parameters are required.
 - Relative paths are resolved from the working directory.
 
+The configuration file is read line by line using fgets().
+
+1. Remove leading and trailing whitespace.
+2. Skip empty lines and comment lines.
+3. If the line contains '=', split it into a key and a value.
+4. Otherwise, parse it as a deterministic packet action.
+5. Validate the parsed values and store them in the
+   corresponding configuration or action structure.
+6. After reading the entire file, verify that all required
+   configuration parameters are present.
+
+If any validation fails, the emulator prints an error
+message with the corresponding line number and exits
+with status 2.
+
 ### 7.3 Configuration parameters
 
 | Parameter | Baseline | Allowed values |
 |-----------|----------|----------------|
 | listen_port | 9001 | 1-65535 |
 | receiver_port | 9002 | 1-65535 |
-| log_path | runs/emulator.log | Writable file path |
+| log_path | runs/scratch/emulator.log | Writable file path |
 | seed | 337 | Unsigned 32-bit integer |
 | data_rate_bps | 1000000 | Positive integer |
 | ack_rate_bps | 1000000 | Positive integer |
@@ -501,11 +574,46 @@ where L is the total packet size in bits and R is the
 configured link rate in bits per second.
 
 Packets arriving at a full queue are dropped.
-Jitter alone must not change the delivery order.
+
+Jitter is sampled uniformly from [-j, +j], where j is the configured
+jitter for the corresponding direction.
+
+The jitter-adjusted arrival time is calculated as:
+
+arrival = max(tx_end + propagation_delay + jitter, last_arrival)
+
+Each direction maintains its own last_arrival value.
+Packets with equal arrival times retain their FIFO order.
+
+Scripted delays are applied after this calculation and do not update last_arrival.
+Later packets may overtake a packet affected by a scripted delay.
 
 The random number generator is initialized using the
 configured seed to support reproducible experiments.
 
+Reordering holds a packet until the next packet in the
+same direction is forwarded.
+
+At most one packet per direction can be held for reordering.
+
+If another packet is selected for reordering while a packet
+is already held, the new packet is forwarded normally,
+followed by the held packet.
+
+No timeout is applied to held packets.
+If no subsequent packet arrives, the held packet remains
+in memory until the emulator shuts down.
+
+Duplication is performed at the emulator output.
+
+The duplicate is forwarded immediately after the original
+packet and contains the same bytes.
+
+Duplicate packets do not occupy additional queue space
+or consume additional link transmission time.
+
+No additional propagation delay or jitter is applied
+to the duplicate.
 
 Impairment processing order
 
@@ -516,7 +624,8 @@ Impairment processing order
 5. Apply corruption.
 6. Apply propagation delay, jitter and additional scripted delay.
 7. Apply reordering.
-8. Forward the packet and its duplicate, if requested.
+8. Forward the packet and immediately forward its
+   duplicate if duplication is requested.
 
 Dropped packets are not processed further.
 A scripted action forces the corresponding impairment.
@@ -524,8 +633,8 @@ Random impairments remain active for other impairments.
 
 ### 7.5 Deterministic packet actions
 
-Optional packet-specific actions may be appended to the
-configuration file or append to a new configuration file.
+Optional packet-specific actions may be appended to any
+configuration file.
 
 
 | Syntax | Behavior |
@@ -556,3 +665,12 @@ sequence-number failures in Experiment 5.
 |--------|---------|
 | 0 | Normal shutdown |
 | 2 | Invalid configuration or system error |
+
+On SIGINT or SIGTERM, the emulator stops its event loop,
+flushes and closes the log file, releases allocated
+resources and closes its socket.
+
+Pending packets are discarded during shutdown.
+
+A successful shutdown returns exit status 0.
+A system error during shutdown returns exit status 2.
