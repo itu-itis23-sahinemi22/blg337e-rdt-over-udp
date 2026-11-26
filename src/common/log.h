@@ -1,4 +1,4 @@
-
+/* Monotonic timestamps and CSV logging helpers. */
 #ifndef LOG_H
 #define LOG_H
 

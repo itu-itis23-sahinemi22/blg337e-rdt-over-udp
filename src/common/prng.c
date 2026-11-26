@@ -1,8 +1,18 @@
 #include "prng.h"
 
+static uint32_t mix_seed(uint32_t seed) {
+    seed ^= seed >> 16;
+    seed *= 0x85ebca6bU;
+    seed ^= seed >> 13;
+    seed *= 0xc2b2ae35U;
+    seed ^= seed >> 16;
+    return seed;
+}
+
 void prng_init(prng_t *rng, uint32_t seed)
 {
-    rng->state = seed == 0 ? 1 : seed;
+    uint32_t mixed = mix_seed(seed);
+    rng->state = mixed == 0 ? 1 : mixed;
 }
 
 uint32_t prng_next(prng_t *rng)
